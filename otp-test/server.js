@@ -1,18 +1,12 @@
-// Minimal third-party OTP app: calls YOUR SMS infrastructure's API to deliver codes, then verifies them.
+// OTP test client backed by EthioSMS native OTP API.
 const express = require("express");
-const crypto = require("crypto");
 const path = require("path");
+const crypto = require("crypto");
 
 const {
-  SMS_API_URL,                       // full URL of your infrastructure's "send SMS" endpoint
-  SMS_API_KEY,                       // API key/token issued to this app by your infrastructure
-  SMS_AUTH_HEADER = "Authorization", // e.g. "Authorization" or "X-API-Key"
-  SMS_AUTH_SCHEME = "Bearer",        // "Bearer", "Basic", or "" (raw key)
-  SMS_BODY_TEMPLATE = '{"to":"{{phone}}","message":"{{message}}"}',
-  OTP_TTL_SECONDS = "300",
-  OTP_LENGTH = "6",
-  MAX_ATTEMPTS = "5",
-  RESEND_COOLDOWN_SECONDS = "30",
+  ETHIOSMS_BASE_URL = "https://ethiosms.onrender.co",
+  ETHIOSMS_API_KEY,
+  OTP_PURPOSE = "login",
   PORT = 3000,
 } = process.env;
 
@@ -20,89 +14,88 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// In-memory store: phone -> { hash, expires, attempts, lastSent }
-const store = new Map();
-const hash = (code, phone) =>
-  crypto.createHash("sha256").update(`${phone}:${code}`).digest("hex");
-const normalize = (p) => String(p || "").replace(/[\s()-]/g, "");
-const validPhone = (p) => /^\+\d{8,15}$/.test(p);
+// This mapping is only needed to associate the browser's phone with its challenge.
+// EthioSMS remains authoritative for OTP generation, expiry, attempts and verification.
+const challenges = new Map();
+const normalize = (p) => String(p || "").replace(/[\\s()-]/g, "");
+const validPhone = (p) => /^\\+\\d{8,15}$/.test(p);
 
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of store) if (v.expires < now) store.delete(k);
-}, 60_000).unref();
-
-// Replace {{phone}} / {{message}} in every string of the template (keeps JSON escaping safe).
-const fill = (node, vars) =>
-  typeof node === "string"
-    ? node.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? "")
-    : Array.isArray(node)
-    ? node.map((n) => fill(n, vars))
-    : node && typeof node === "object"
-    ? Object.fromEntries(Object.entries(node).map(([k, v]) => [k, fill(v, vars)]))
-    : node;
-
-async function sendSms(phone, text) {
-  const body = fill(JSON.parse(SMS_BODY_TEMPLATE), { phone, message: text });
-  const headers = { "Content-Type": "application/json" };
-  if (SMS_API_KEY) headers[SMS_AUTH_HEADER] = `${SMS_AUTH_SCHEME} ${SMS_API_KEY}`.trim();
-  const res = await fetch(SMS_API_URL, { method: "POST", headers, body: JSON.stringify(body) });
-  const raw = await res.text();
-  if (!res.ok) throw new Error(`SMS API responded ${res.status}: ${raw.slice(0, 300)}`);
-  return raw;
+async function ethioRequest(route, body, idempotencyKey) {
+  if (!ETHIOSMS_API_KEY) throw new Error("ETHIOSMS_API_KEY is not configured");
+  const base = ETHIOSMS_BASE_URL.replace(/\\/$/, "");
+  const response = await fetch(base + route, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${ETHIOSMS_API_KEY}`,
+      "Content-Type": "application/json",
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+    redirect: "error",
+  });
+  const raw = await response.text();
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; } catch {}
+  if (!response.ok) {
+    const error = new Error(data.error || data.message || `EthioSMS API returned HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return data;
 }
 
 app.post("/api/send-otp", async (req, res) => {
   const phone = normalize(req.body.phone);
   if (!validPhone(phone))
     return res.status(400).json({ error: "Use international format, e.g. +251911234567" });
-  if (!SMS_API_URL) return res.status(500).json({ error: "SMS_API_URL not set" });
 
-  const existing = store.get(phone);
-  const wait = existing
-    ? Number(RESEND_COOLDOWN_SECONDS) - Math.floor((Date.now() - existing.lastSent) / 1000)
-    : 0;
-  if (wait > 0) return res.status(429).json({ error: `Wait ${wait}s before requesting another code` });
-
-  const len = Number(OTP_LENGTH);
-  const code = String(crypto.randomInt(0, 10 ** len)).padStart(len, "0");
   try {
-    const out = await sendSms(
-      phone,
-      `Your verification code is ${code}. It expires in ${Math.round(Number(OTP_TTL_SECONDS) / 60)} min.`
+    const result = await ethioRequest(
+      "/api/v1/otp/request",
+      { to: phone, purpose: OTP_PURPOSE },
+      `otp-test:${crypto.randomUUID()}`
     );
-    store.set(phone, {
-      hash: hash(code, phone),
-      expires: Date.now() + Number(OTP_TTL_SECONDS) * 1000,
-      attempts: 0,
-      lastSent: Date.now(),
-    });
-    console.log("SMS API accepted:", out);
+    if (!result.challengeId) {
+      console.error("EthioSMS OTP response did not contain challengeId");
+      return res.status(502).json({ error: "EthioSMS did not return an OTP challenge. Check the API response and key scopes." });
+    }
+    challenges.set(phone, { challengeId: result.challengeId, purpose: OTP_PURPOSE });
     res.json({ ok: true });
   } catch (e) {
-    console.error(e.message);
-    res.status(502).json({ error: e.message });
+    console.error("EthioSMS OTP request failed:", e.status || "", e.message);
+    res.status(e.status === 429 ? 429 : e.status === 401 || e.status === 403 ? e.status : 502)
+      .json({ error: e.message });
   }
 });
 
-app.post("/api/verify-otp", (req, res) => {
+app.post("/api/verify-otp", async (req, res) => {
   const phone = normalize(req.body.phone);
   const code = String(req.body.code || "").trim();
-  const rec = store.get(phone);
-  if (!rec || rec.expires < Date.now())
-    return res.status(400).json({ error: "Code expired or not requested" });
-  if (rec.attempts >= Number(MAX_ATTEMPTS)) {
-    store.delete(phone);
-    return res.status(429).json({ error: "Too many attempts. Request a new code." });
+  if (!validPhone(phone) || !/^\\d{4,8}$/.test(code))
+    return res.status(400).json({ error: "Enter a valid phone number and verification code" });
+
+  const challenge = challenges.get(phone);
+  if (!challenge)
+    return res.status(400).json({ error: "Code not requested. Request a new code." });
+
+  try {
+    const result = await ethioRequest("/api/v1/otp/verify", {
+      challengeId: challenge.challengeId,
+      purpose: challenge.purpose,
+      code,
+    });
+    if (result.verified === true) {
+      challenges.delete(phone);
+      return res.json({ ok: true, verified: true });
+    }
+    return res.status(400).json({ error: "Incorrect or expired code" });
+  } catch (e) {
+    console.error("EthioSMS OTP verification failed:", e.status || "", e.message);
+    if ([400, 401, 403, 404, 429].includes(e.status))
+      return res.status(e.status).json({ error: e.message });
+    res.status(502).json({ error: e.message });
   }
-  rec.attempts++;
-  const a = Buffer.from(hash(code, phone));
-  const b = Buffer.from(rec.hash);
-  if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
-    store.delete(phone);
-    return res.json({ ok: true, verified: true });
-  }
-  res.status(400).json({ error: "Incorrect code" });
 });
 
 app.get("/health", (_, res) => res.send("ok"));
