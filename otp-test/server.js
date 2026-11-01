@@ -24,8 +24,8 @@ app.use(express.static(path.join(__dirname, "public")));
 const store = new Map();
 const hash = (code, phone) =>
   crypto.createHash("sha256").update(`${phone}:${code}`).digest("hex");
-const normalize = (p) => String(p || "").replace(/[\\s()-]/g, "");
-const validPhone = (p) => /^\\+\\d{8,15}$/.test(p);
+const normalize = (p) => String(p || "").replace(/[\s()-]/g, "");
+const validPhone = (p) => /^\+\d{8,15}$/.test(p);
 
 setInterval(() => {
   const now = Date.now();
@@ -35,7 +35,7 @@ setInterval(() => {
 // Replace {{phone}} / {{message}} in every string of the template (keeps JSON escaping safe).
 const fill = (node, vars) =>
   typeof node === "string"
-    ? node.replace(/\\{\\{(\\w+)\\}\\}/g, (_, k) => vars[k] ?? "")
+    ? node.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? "")
     : Array.isArray(node)
     ? node.map((n) => fill(n, vars))
     : node && typeof node === "object"
