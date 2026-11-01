@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OTP Test</title>
+<style>
+  :root{--bg:#f6f7f9;--card:#fff;--text:#16181d;--muted:#6b7280;--accent:#2563eb;--ok:#15803d;--err:#b91c1c;--line:#d9dde3}
+  @media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#181b21;--text:#eceef2;--muted:#9aa1ad;--accent:#5b8def;--ok:#4ade80;--err:#f87171;--line:#2a2f38}}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,sans-serif}
+  .card{width:min(380px,92vw);background:var(--card);border:1px solid var(--line);border-radius:14px;padding:28px}
+  h1{font-size:20px;margin:0 0 4px}
+  p.sub{margin:0 0 20px;color:var(--muted);font-size:14px}
+  input,button{width:100%;padding:12px;border-radius:8px;font:inherit}
+  input{border:1px solid var(--line);background:transparent;color:var(--text);margin-bottom:12px}
+  input.code{letter-spacing:.4em;text-align:center;font-size:22px}
+  button{border:0;background:var(--accent);color:#fff;cursor:pointer;font-weight:600}
+  button:disabled{opacity:.5;cursor:wait}
+  a{color:var(--accent);cursor:pointer;font-size:14px}
+  #msg{min-height:22px;margin-top:14px;font-size:14px}
+  .ok{color:var(--ok)}.err{color:var(--err)}
+  .hide{display:none}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Verify your phone</h1>
+  <p class="sub" id="sub">Enter your number to receive a code.</p>
+
+  <div id="step1">
+    <input id="phone" type="tel" placeholder="+251911234567" autocomplete="tel">
+    <button id="send">Send code</button>
+  </div>
+
+  <div id="step2" class="hide">
+    <input id="code" class="code" inputmode="numeric" maxlength="8" placeholder="••••••" autocomplete="one-time-code">
+    <button id="verify">Verify</button>
+    <p style="text-align:center;margin:14px 0 0"><a id="back">Use a different number</a></p>
+  </div>
+
+  <div id="msg"></div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const msg = (t, ok) => { $("msg").textContent = t; $("msg").className = ok ? "ok" : "err"; };
+async function post(url, data) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || "Request failed");
+  return j;
+}
+$("send").onclick = async () => {
+  $("send").disabled = true; msg("");
+  try {
+    await post("/api/send-otp", { phone: $("phone").value });
+    $("step1").classList.add("hide"); $("step2").classList.remove("hide");
+    $("sub").textContent = "Enter the code we texted to " + $("phone").value;
+    msg("Code sent. Check your phone.", true); $("code").focus();
+  } catch (e) { msg(e.message); }
+  $("send").disabled = false;
+};
+$("verify").onclick = async () => {
+  $("verify").disabled = true; msg("");
+  try {
+    await post("/api/verify-otp", { phone: $("phone").value, code: $("code").value });
+    $("step2").classList.add("hide"); $("sub").textContent = "";
+    msg("✓ Phone number verified. SMS pipeline works end to end.", true);
+  } catch (e) { msg(e.message); }
+  $("verify").disabled = false;
+};
+$("back").onclick = () => {
+  $("step2").classList.add("hide"); $("step1").classList.remove("hide");
+  $("code").value = ""; msg(""); $("sub").textContent = "Enter your number to receive a code.";
+};
+</script>
+</body>
+</html>
