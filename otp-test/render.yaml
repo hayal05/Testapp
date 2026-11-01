@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: otp-test
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: SMS_API_URL
+        sync: false
+      - key: SMS_API_KEY
+        sync: false
