@@ -17,12 +17,12 @@ app.use(express.static(path.join(__dirname, "public")));
 // This mapping is only needed to associate the browser's phone with its challenge.
 // EthioSMS remains authoritative for OTP generation, expiry, attempts and verification.
 const challenges = new Map();
-const normalize = (p) => String(p || "").replace(/[\\s()-]/g, "");
-const validPhone = (p) => /^\\+\\d{8,15}$/.test(p);
+const normalize = (p) => String(p || "").replace(/[\s()-]/g, "");
+const validPhone = (p) => /^\+\d{8,15}$/.test(p);
 
 async function ethioRequest(route, body, idempotencyKey) {
   if (!ETHIOSMS_API_KEY) throw new Error("ETHIOSMS_API_KEY is not configured");
-  const base = ETHIOSMS_BASE_URL.replace(/\\/$/, "");
+  const base = ETHIOSMS_BASE_URL.replace(/\/$/, "");
   const response = await fetch(base + route, {
     method: "POST",
     headers: {
@@ -72,7 +72,7 @@ app.post("/api/send-otp", async (req, res) => {
 app.post("/api/verify-otp", async (req, res) => {
   const phone = normalize(req.body.phone);
   const code = String(req.body.code || "").trim();
-  if (!validPhone(phone) || !/^\\d{4,8}$/.test(code))
+  if (!validPhone(phone) || !/^\d{4,8}$/.test(code))
     return res.status(400).json({ error: "Enter a valid phone number and verification code" });
 
   const challenge = challenges.get(phone);
